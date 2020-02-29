@@ -1,20 +1,44 @@
 #include <WiFi.h>
 #include "FS.h"
 #include "SD.h"
-//#include "SDControll"
+#include "AudioFileSourceSD.h"
+#include "AudioGeneratorMP3.h"
+#include "AudioGeneratorWAV.h"
+#include "AudioOutputI2S.h"
+#include "AudioFileSourceID3.h"
 
 IPAddress apIP(192, 168, 1, 1);
 WiFiServer server(80);
 
 const int CS = 5;
 
-const char htmlHeader[] = "<!DOCTYPE html>\r\n<html>\r\n<head>\r\n<title>title</title>\r\n<link rel=\"stylesheet\" type=\"text/css\" href=\"http://192.168.1.1/style.css\" />\r\n</head>\r\n<body>\r\n";
+const int UP = 2;
+const int DOWN = 4;
+const int RESET = 15;
+bool up = false;
+bool down = false;
+bool reset = false;
+
+const float volume[] = {0.0, 0.01, 0.05, 0.1, 0.2, 0.3};
+int gain = 2;
+
+const char htmlHeader[] = "<!DOCTYPE html>\r\n<html>\r\n<head>\r\n<title>title</title>\r\n<link rel=\"stylesheet\" type=\"text/css\" href=\"http://192.168.1.1/style.css\" />\r\n</head>\r\n<body>\r\n<iframe name=\"send\" src=\"http://192.168.1.1/send.html\" style=\"width:0px;height:0px;border:0px; border:none;\"></iframe>\r\n";
 //const char htmlHeader[] = "<!DOCTYPE html>\r\n<html>\r\n<head>\r\n<title>title</title>\r\n<link rel=\"stylesheet\" type=\"text/css\" href=\"http://192.168.1.1/style.css\" />\r\n<script type=\"text/javascript\">\r\nfunction doNoting() {}\r\n</script></head>\r\n<body>\r\n";
 const char style[] = ".submitbutton {\r\n\tbackground:none;\r\n\tborder:0;\r\n\tcolor :#1a1aff;\r\n}\r\n.submitbutton:hover {\r\n}";
+const char sendHtml[] = "<!DOCTYPE html>\r\n<html>\r\n<head>\r\n</head>\r\n<body>\r\n</body></html>";
+
+AudioGenerator* agene;
+AudioFileSourceSD* audioFile;
+AudioOutput* aOutput;
+AudioFileSourceID3 *id3;
+
+bool play = false;
 
 void setup() 
 {
-
+  pinMode(UP, INPUT);
+  pinMode(DOWN, INPUT);
+  pinMode(RESET, INPUT);
   Serial.begin(9600);
 
   if(!SD.begin(CS))
@@ -23,7 +47,6 @@ void setup()
       while (1) 
       {
         //  ticker
-        
         delay(1);  
       }
   }
@@ -39,6 +62,56 @@ void setup()
 
 void loop() 
 {
+  if (digitalRead(UP) == HIGH) 
+  {
+    if (!up) 
+    {
+      if (gain < 5)
+        gain++;
+      if (aOutput)
+        aOutput->SetGain(volume[gain]);
+      Serial.println("up to " + String(volume[gain]));
+    }
+    up = true;
+  } 
+  else
+    up = false;
+  
+  if (digitalRead(DOWN) == HIGH) 
+  {
+    if (!down) 
+    {
+      if (gain > 0)
+        gain--;
+      if (aOutput)
+        aOutput->SetGain(volume[gain]);
+      Serial.println("down to " + String(volume[gain]));
+    }
+    down = true;
+  } 
+  else
+    down = false;
+
+  if (digitalRead(RESET) == HIGH)
+  {
+    if (!reset) 
+    {
+      if (audioFile)
+        audioFile->seek(0, SEEK_SET);
+      Serial.println("reset");
+    }
+    reset = true;
+  } 
+  else
+    reset = false;
+  
+  if (play && agene && agene->isRunning()) 
+    if(!agene->loop())
+    {
+      agene->stop();
+      Serial.println("MP3 end");
+    }
+  
   WiFiClient client = server.available();
 
   if (!client)
@@ -72,7 +145,7 @@ void loop()
     if (currentLine.startsWith("POST ")) 
     {
       currentLine = currentLine.substring(5, currentLine.indexOf(" ", 5));
-      //httpPOST();
+      httpPOST(currentLine, client);
       client.stop();
       continue;
     }
@@ -89,6 +162,15 @@ void httpGET(String &str, WiFiClient &client)
     client.println("Content-type:text/css");
     client.println();
     client.println(style);
+    return;
+  }
+
+  if (str == "/send.html")
+  {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-type:text/css");
+    client.println();
+    client.println(sendHtml);
     return;
   }
 
@@ -135,13 +217,12 @@ void httpGET(String &str, WiFiClient &client)
       else
       {
         //  create post form
-        //client.print("<form method=\"post\" onsubmit=\"doNoting();return false;\"><input type=\"submit\" value=\"");
-        client.print("<form method=\"post\"><input type=\"submit\" value=\"");
+        client.print("<form method=\"post\" target=\"send\">\r\n<input type=\"submit\" value=\"");
         for (++p; file.name()[p] != '\0'; p++)
           client.print(file.name()[p]);
-        client.println("\" name=\"play\" class=\"submitbutton\"></form><br>");
-        //Serial.print("  SIZE: ");
-        //Serial.println(file.size());
+        client.print("\" class=\"submitbutton\"/>\r\n<input type=\"hidden\" name=\"play\" value=\"");
+        client.print(file.name());
+        client.println("\"/>\r\n</form>");
       }
       file = root.openNextFile();
   }
@@ -152,10 +233,9 @@ void httpGET(String &str, WiFiClient &client)
 
 void httpPOST(String &str, WiFiClient &client)
 {
-
   //  music player
-  if (str != "/play.php")
-    return;
+  //if (str != "/play.php")
+  //  return;
 
   String currentLine = "";
   while (client.connected()) 
@@ -171,24 +251,58 @@ void httpPOST(String &str, WiFiClient &client)
       continue;
     }
 
-    if (currentLine.startsWith("play=")) 
-    {
-      break;
-    } 
-    else if (currentLine.startsWith("skip="))
-    {
-      break;
-    }
-    else if (currentLine.startsWith("back="))
-    {
-      break;
-    } 
-    else if (currentLine.startsWith("stop="))
-    {
-      break;
-    }
+    Serial.println(currentLine);
 
+    if (currentLine == "")
+    {
+      while (client.available())
+      {
+        char k = client.read();
+        if (k == '\r' || k == '\n')
+          break;
+        currentLine += k;
+      }
+      Serial.println(currentLine);
+
+      currentLine = currentLine.substring(currentLine.indexOf("=") + 1);
+      currentLine.replace("%2F", "/");
+      
+      delete agene;    
+      if (currentLine.endsWith(".mp3"))
+        agene = new AudioGeneratorMP3();
+      else if (currentLine.endsWith(".wav"))
+        agene = new AudioGeneratorWAV();
+      else
+      {
+        Serial.println("invalid format.");
+        break;  
+      }
+      
+      delete audioFile;
+      audioFile = new AudioFileSourceSD(currentLine.c_str());
+      if (!audioFile)
+      {
+        Serial.println(currentLine + " is not found.");
+        break;
+      }
+      delete id3;
+      id3 = new AudioFileSourceID3(audioFile);
+      delete aOutput;
+      aOutput = new AudioOutputI2S();
+      aOutput->SetGain(volume[gain]);
+      
+      agene->begin(id3, aOutput);
+      play = true;
+         
+      break;
+    }
+    currentLine = "";
   }
-
-    
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/hmtl");
+  client.println("");
+  client.println("<!DOCTYPE html>");
+  client.println("<html>\r\n<head></head>");
+  client.println("<body></body>");
+  client.println("</html>");
 }
