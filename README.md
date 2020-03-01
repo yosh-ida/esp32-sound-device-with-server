@@ -9,9 +9,7 @@ E (47525) task_wdt: Tasks currently running:
 E (47525) task_wdt: CPU 0: loop
 E (47525) task_wdt: CPU 1: loopTask
 E (47525) task_wdt: Aborting.
-abort() was called at PC 0x400f3a63 on core 0`
-
-`c: invoke_abort at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp32/panic.c line 155
+abort() was called at PC 0x400f3a63 on core 0``c: invoke_abort at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp32/panic.c line 155
 0x4008ca0d: abort at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp32/panic.c line 170
 0x400f3a63: task_wdt_isr at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp32/task_wdt.c line 174
 0x4008a091: vTaskExitCritical at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/tasks.c line 4274
