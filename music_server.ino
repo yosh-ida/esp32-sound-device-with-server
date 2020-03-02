@@ -1,4 +1,5 @@
 #include <WiFi.h>
+#include "freertos/task.h"
 #include "FS.h"
 #include "SD.h"
 #include "AudioFileSourceSD.h"
@@ -6,20 +7,30 @@
 #include "AudioGeneratorWAV.h"
 #include "AudioOutputI2S.h"
 #include "AudioFileSourceID3.h"
+#include "music_type.h"
 
-IPAddress apIP(192, 168, 1, 1);
-WiFiServer server(80);
+//スレッドセーフにするには
+//1.AudioGenerator,AudioFileSourceID3,AudioOutputI2Sは共通でいいが、AudioFileSourceSDは現在再生中のものと、次に再生するものとで分ける。
+//切り替わりはグローバルなbool型変数で判断し、再生ループを行っている方がループの最初に切り替わりを判定して、Generatorを構築しなおす。
+//また、outputI2Sをスレッドセーフなものにするため、音量の増減もboolで保存しておく。
+//2.再生ループとwifi処理のループで分ける。
+//こんな感じ
+//仕様では、sdから4つまでファイルを開けるから、この方式の最大数(3)で問題ない
 
 const int CS = 5;
 
 const int UP = 2;
 const int DOWN = 4;
 const int RESET = 15;
+const float volume[] = {0.0, 0.01, 0.05, 0.1, 0.2, 0.3};
+
 bool up = false;
 bool down = false;
 bool reset = false;
 
-const float volume[] = {0.0, 0.01, 0.05, 0.1, 0.2, 0.3};
+IPAddress apIP(192, 168, 1, 1);
+WiFiServer server(80);
+
 int gain = 2;
 
 const char htmlHeader[] = "<!DOCTYPE html>\r\n<html>\r\n<head>\r\n<title>title</title>\r\n<link rel=\"stylesheet\" type=\"text/css\" href=\"http://192.168.1.1/style.css\" />\r\n</head>\r\n<body>\r\n<iframe name=\"send\" src=\"http://192.168.1.1/send.html\" style=\"width:0px;height:0px;border:0px; border:none;\"></iframe>\r\n";
@@ -28,17 +39,25 @@ const char style[] = ".submitbutton {\r\n\tbackground:none;\r\n\tborder:0;\r\n\t
 const char sendHtml[] = "<!DOCTYPE html>\r\n<html>\r\n<head>\r\n</head>\r\n<body>\r\n</body></html>";
 
 AudioGenerator* agene;
-AudioFileSourceSD* audioFile;
+AudioFileSourceSD *currentFile, *nextFile;
 AudioOutput* aOutput;
 AudioFileSourceID3 *id3;
 
 bool play = false;
+bool next = false;  
+
+FILE_TYPE ft = FILE_TYPE_NUM;
+TaskHandle_t th;
 
 void setup() 
 {
   pinMode(UP, INPUT);
   pinMode(DOWN, INPUT);
   pinMode(RESET, INPUT);
+
+  aOutput = new AudioOutputI2S();
+  aOutput->SetGain(volume[gain]);
+  
   Serial.begin(9600);
 
   if(!SD.begin(CS))
@@ -50,6 +69,8 @@ void setup()
         delay(1);  
       }
   }
+
+  xTaskCreatePinnedToCore(multiLoop, "loop", 8192, NULL, 1, &th, 0);
   
   WiFi.disconnect();
   WiFi.mode(WIFI_AP);
@@ -60,7 +81,21 @@ void setup()
   server.begin();
 }
 
-void loop() 
+void multiLoop(void *param)
+{
+  while (1)
+  {
+    serverProcess();
+    vTaskDelay(10);
+  }
+}
+
+void loop()
+{
+  musicPlayer();
+}
+
+void musicPlayer()
 {
   if (digitalRead(UP) == HIGH) 
   {
@@ -94,24 +129,42 @@ void loop()
 
   if (digitalRead(RESET) == HIGH)
   {
-    if (!reset) 
+    if (!reset)
     {
-      if (audioFile)
-        audioFile->seek(0, SEEK_SET);
+      if (currentFile)
+        currentFile->seek(0, SEEK_SET);
       Serial.println("reset");
     }
     reset = true;
   } 
   else
     reset = false;
+
+  if (next)
+  {
+    delete currentFile;
+    currentFile = nextFile;
+    delete id3;
+    id3 = new AudioFileSourceID3(currentFile);
+    if (agene)
+      delete agene;
+    agene = audioGenerate(ft);
+    agene->begin(id3, aOutput);
+    next = false;
+  }
   
-  if (play && agene && agene->isRunning()) 
+  if (play && agene && agene->isRunning())
     if(!agene->loop())
     {
       agene->stop();
       Serial.println("MP3 end");
     }
-  
+  if (agene && !agene->isRunning())
+    play = false;
+}
+
+void serverProcess()
+{
   WiFiClient client = server.available();
 
   if (!client)
@@ -155,7 +208,6 @@ void loop()
 
 void httpGET(String &str, WiFiClient &client)
 {
-
   if (str == "/style.css")
   {
     client.println("HTTP/1.1 200 OK");
@@ -173,6 +225,11 @@ void httpGET(String &str, WiFiClient &client)
     client.println(sendHtml);
     return;
   }
+
+  if (str[str.length() - 1] == '/' && str.length() > 2)
+    str = str.substring(0, str.length() - 1);
+
+  decordUrlString(str);
 
   //  str == GET url
   File root = SD.open(str);
@@ -265,35 +322,36 @@ void httpPOST(String &str, WiFiClient &client)
       Serial.println(currentLine);
 
       currentLine = currentLine.substring(currentLine.indexOf("=") + 1);
-      currentLine.replace("%2F", "/");
+      //currentLine.replace("%2F", "/");
+      decordUrlString(currentLine);
+      Serial.println(currentLine);
       
-      delete agene;    
-      if (currentLine.endsWith(".mp3"))
-        agene = new AudioGeneratorMP3();
-      else if (currentLine.endsWith(".wav"))
-        agene = new AudioGeneratorWAV();
-      else
+      int i;
+      for (i = 0; i < FILE_TYPE_NUM; i++)
+      {
+        if (!currentLine.endsWith(type[i]))
+          continue;
+        ft = (FILE_TYPE)i;
+      }
+      if (ft == FILE_TYPE_NUM)
       {
         Serial.println("invalid format.");
+        next = false;
         break;  
       }
-      
-      delete audioFile;
-      audioFile = new AudioFileSourceSD(currentLine.c_str());
-      if (!audioFile)
+      if (nextFile != currentFile)
+      {
+        Serial.println("delete file reader.");
+        delete nextFile;
+      }
+      nextFile = new AudioFileSourceSD(currentLine.c_str());
+      if (!nextFile)
       {
         Serial.println(currentLine + " is not found.");
         break;
       }
-      delete id3;
-      id3 = new AudioFileSourceID3(audioFile);
-      delete aOutput;
-      aOutput = new AudioOutputI2S();
-      aOutput->SetGain(volume[gain]);
-      
-      agene->begin(id3, aOutput);
-      play = true;
-         
+      play = true;  
+      next = true;
       break;
     }
     currentLine = "";
