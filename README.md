@@ -1,7 +1,8 @@
 # esp32-sound-device-with-server
 
 ## TODO
-1. AP->STAにして、SDカード上のSSID,PASSのリストをもとにAPを検索、接続してhttpサーバーを立てる。
+1. ~~AP->STAにして、SDカード上のSSID,PASSのリストをもとにAPを検索、接続してhttpサーバーを立てる。~~<br>
+APmodeだと、sdカード内の構造検索が異様に遅くなっている。構造検索しないものは早いことから高速化(全構造解析、txtにhtmlを保存しておく)するとか。
 2. multi threadでplayerがCPU1を占有しているが、バランスをよくして以下のエラー原因を探す。
 `E (47525) task_wdt: Task watchdog got triggered. The following tasks did not reset the watchdog in time:
 E (47525) task_wdt:  - IDLE0 (CPU 0)
@@ -21,3 +22,4 @@ abort() was called at PC 0x400f3a63 on core 0``c: invoke_abort at /home/runner/w
 0x400d262a: serverProcess() at C:\Users\Haruki\Documents\Arduino\music_server/music_server.ino line 174
 0x400d2897: multiLoop(void*) at C:\Users\Haruki\Documents\Arduino\music_server/music_server.ino line 88
 0x40088f25: vPortTaskWrapper at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/port.c line 143`
+3. telnetからのhttpリクエストを受け付けないことが多いことの検証。
