@@ -28,7 +28,6 @@ bool up = false;
 bool down = false;
 bool reset = false;
 
-IPAddress apIP(192, 168, 1, 1);
 WiFiServer server(80);
 
 int gain = 2;
@@ -69,30 +68,48 @@ void setup()
         delay(1);  
       }
   }
-
-  xTaskCreatePinnedToCore(multiLoop, "loop", 8192, NULL, 1, &th, 0);
   
   WiFi.disconnect();
-  WiFi.mode(WIFI_AP);
-  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-  delay(100);
-  WiFi.softAP("DNSServerExample", "12345678");
-  delay(100);
+  WiFi.mode(WIFI_STA);
+  File f = SD.open("/connect.txt");
+  if (!f)
+  {
+    Serial.println("connect info not found.");
+    while (1)
+    {
+      //  ticker
+      delay(1000);  
+    }
+  }
+
+  String ssid = f.readStringUntil(' ');
+  String pass = f.readString();
+  Serial.println("ssid : " + ssid);
+  Serial.println("pass : " + pass);
+  WiFi.begin(ssid.c_str(), pass.c_str());
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("ip is " + String(WiFi.localIP()[0]) + "," + String(WiFi.localIP()[1]) + "," + String(WiFi.localIP()[2]) + "," + String(WiFi.localIP()[3]));
   server.begin();
+  //xTaskCreatePinnedToCore(multiLoop, "loop", 8192, NULL, 1, &th, 0);
 }
 
 void multiLoop(void *param)
 {
   while (1)
   {
-    serverProcess();
+    musicPlayer();
+    //serverProcess();
     vTaskDelay(10);
   }
 }
 
 void loop()
 {
-  musicPlayer();
+  //musicPlayer();
+  serverProcess();
 }
 
 void musicPlayer()
@@ -184,7 +201,7 @@ void serverProcess()
       continue;
     }
 
-    Serial.println("HTTP : " + currentLine);  
+    Serial.println("HTTP : " + currentLine);
     
     if (currentLine.startsWith("GET "))
     {
@@ -254,8 +271,7 @@ void httpGET(String &str, WiFiClient &client)
   if (str != "/")
     client.println("<a href=\"./\">./</a><br>");
 
-  File file = root.openNextFile();
-  while(file)
+  for (File file = root.openNextFile(); file; file = root.openNextFile())
   {
       int p = 0;
       for (int i = 0; file.name()[i] != '\0'; i++)
@@ -273,6 +289,9 @@ void httpGET(String &str, WiFiClient &client)
       }
       else
       {
+        //  ssidなどの情報は見えないようにする
+        if (file.name() == "/connect.txt")
+          continue;          
         //  create post form
         client.print("<form method=\"post\" target=\"send\">\r\n<input type=\"submit\" value=\"");
         for (++p; file.name()[p] != '\0'; p++)
@@ -281,7 +300,6 @@ void httpGET(String &str, WiFiClient &client)
         client.print(file.name());
         client.println("\"/>\r\n</form>");
       }
-      file = root.openNextFile();
   }
 
   client.println("</body>");
